@@ -1,0 +1,23 @@
+# requirements.txt
+# Core dependencies for MAPPO training on Overcooked
+
+# Overcooked environment
+overcooked-ai>=1.1.0
+
+# Ray RLlib for MAPPO
+ray[rllib]>=2.7.0
+torch>=2.0.0
+
+# Gym (required by RLlib)
+gymnasium>=0.28.0
+
+# Additional utilities
+numpy>=1.24.0
+pandas>=2.0.0
+
+# For visualization (optional)
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# For better progress bars (optional)
+tqdm>=4.65.0
