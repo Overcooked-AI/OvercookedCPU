@@ -11,13 +11,25 @@ torch>=2.0.0
 # Gym (required by RLlib)
 gymnasium>=0.28.0
 
-# Additional utilities
+# Essential utilities
 numpy>=1.24.0
 pandas>=2.0.0
 
-# For visualization (optional)
+# Visualization (required for analysis)
 matplotlib>=3.7.0
 seaborn>=0.12.0
 
-# For better progress bars (optional)
+# TensorBoard (required for monitoring)
+tensorboard>=2.13.0
+
+# Hyperparameter optimization
+optuna>=3.3.0
+
+# Better progress bars
 tqdm>=4.65.0
+
+# System monitoring (optional)
+psutil>=5.9.0
+
+# For report generation (optional)
+reportlab>=4.0.0
