@@ -26,6 +26,7 @@ if src_path not in sys.path:
 
 from overcooked_mappo_env import OvercookedMAPPOEnv, make_overcooked_env
 from config import ENV_CONFIG, TRAINING_CONFIG
+# FIX: Import from local file to ensure we get the fixed version
 from training_monitor import TrainingMonitor
 
 

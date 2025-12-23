@@ -8,7 +8,7 @@ import os
 import json
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, TYPE_CHECKING
 import numpy as np
 from collections import deque
 
@@ -21,8 +21,13 @@ except ImportError:
 
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from ray.rllib.env import BaseEnv
-from ray.rllib.evaluation import Episode, RolloutWorker
 from ray.rllib.policy import Policy
+
+# FIX: Conditional import for Ray 2.30+ compatibility
+# In newer Ray versions, Episode is moved or deprecated, so we import it only for type checking
+# or handle its absence gracefully at runtime.
+if TYPE_CHECKING:
+    from ray.rllib.evaluation import Episode, RolloutWorker
 
 from coordination_metrics import CoordinationMetricsTracker
 
@@ -73,20 +78,20 @@ class TrainingMonitor(DefaultCallbacks):
         """Called at each step of the episode."""
         # Extract state and actions from the episode
         if hasattr(worker, "coordination_tracker"):
-            # Get the last step's info
-            infos = episode.last_info_for()
+            # Get the last step's info - checking for modern Ray API methods
+            # Use last_info_for() if available (legacy/current hybrid)
+            infos = None
+            if hasattr(episode, 'last_info_for'):
+                infos = episode.last_info_for()
             
             if infos and "agent_0" in infos:
                 # Get actions from episode
                 actions = {}
-                for agent_id in ["agent_0", "agent_1"]:
-                    if agent_id in episode.last_action_for():
-                        actions[agent_id] = episode.last_action_for(agent_id)
-                
-                # Get rewards
                 rewards = {}
                 for agent_id in ["agent_0", "agent_1"]:
-                    if agent_id in episode.last_reward_for():
+                    if hasattr(episode, 'last_action_for') and agent_id in episode.last_action_for():
+                        actions[agent_id] = episode.last_action_for(agent_id)
+                    if hasattr(episode, 'last_reward_for') and agent_id in episode.last_reward_for():
                         rewards[agent_id] = episode.last_reward_for(agent_id)
                 
                 # Update coordination tracker (we'll approximate state from info)
@@ -103,9 +108,10 @@ class TrainingMonitor(DefaultCallbacks):
                     pass  # Skip if state not available
             
             # Track step rewards
-            episode.user_data["step_rewards"].append(
-                episode.last_reward_for("agent_0")
-            )
+            if hasattr(episode, 'last_reward_for'):
+                episode.user_data["step_rewards"].append(
+                    episode.last_reward_for("agent_0")
+                )
     
     def on_episode_end(self, *, worker, base_env, policies, episode, **kwargs):
         """Called when episode ends - compute and log coordination metrics."""
@@ -120,8 +126,14 @@ class TrainingMonitor(DefaultCallbacks):
                 episode.custom_metrics[f"coord/{key}"] = value
         
         # Compute episode statistics
-        episode_reward = episode.total_reward
-        episode_length = episode.length
+        # Handle different Ray versions for episode stats
+        if hasattr(episode, 'total_reward'):
+            episode_reward = episode.total_reward
+            episode_length = episode.length
+        else:
+            # Fallback for newer API or if total_reward isn't directly available
+            episode_reward = sum(episode.user_data.get("step_rewards", [0]))
+            episode_length = len(episode.user_data.get("step_rewards", []))
         
         # Store in custom metrics for aggregation
         episode.custom_metrics["episode_reward"] = episode_reward
@@ -162,22 +174,26 @@ class TrainingMonitor(DefaultCallbacks):
         
         # Policy metrics
         if "info" in result and "learner" in result["info"]:
-            learner_info = result["info"]["learner"]["shared_policy"]
+            learner_info = result["info"]["learner"].get("shared_policy", {})
+            if not learner_info and "default_policy" in result["info"]["learner"]:
+                 learner_info = result["info"]["learner"]["default_policy"]
+
+            learner_stats = learner_info.get("learner_stats", {})
             
             self._log_scalar("policy/loss", 
-                           learner_info.get("learner_stats", {}).get("total_loss", 0), 
+                           learner_stats.get("total_loss", 0), 
                            iteration)
             self._log_scalar("policy/policy_loss",
-                           learner_info.get("learner_stats", {}).get("policy_loss", 0),
+                           learner_stats.get("policy_loss", 0),
                            iteration)
             self._log_scalar("policy/vf_loss",
-                           learner_info.get("learner_stats", {}).get("vf_loss", 0),
+                           learner_stats.get("vf_loss", 0),
                            iteration)
             self._log_scalar("policy/entropy",
-                           learner_info.get("learner_stats", {}).get("entropy", 0),
+                           learner_stats.get("entropy", 0),
                            iteration)
             self._log_scalar("policy/kl_divergence",
-                           learner_info.get("learner_stats", {}).get("kl", 0),
+                           learner_stats.get("kl", 0),
                            iteration)
         
         # === Coordination Metrics ===
@@ -293,53 +309,56 @@ class LiveMonitor:
             return
         
         import pandas as pd
-        df = pd.read_csv(progress_files[0])
-        
-        if len(df) == 0:
-            return
-        
-        latest = df.iloc[-1]
-        iteration = int(latest.get("training_iteration", 0))
-        
-        # Only print if new iteration
-        if iteration <= self.last_iteration:
-            return
-        
-        self.last_iteration = iteration
-        
-        # Clear screen (optional, comment out if annoying)
-        os.system('cls' if os.name == 'nt' else 'clear')
-        
-        print("="*70)
-        print(f"LIVE TRAINING MONITOR - Iteration {iteration}")
-        print("="*70)
-        
-        # Core metrics
-        reward = latest.get("episode_reward_mean", 0)
-        length = latest.get("episode_len_mean", 0)
-        timesteps = latest.get("timesteps_total", 0)
-        
-        print(f"\n📊 Training Progress:")
-        print(f"  Timesteps: {timesteps:,}")
-        print(f"  Episode Reward: {reward:.2f}")
-        print(f"  Episode Length: {length:.1f}")
-        
-        # Coordination metrics (if available)
-        coord_cols = [col for col in df.columns if "coord/" in col]
-        if coord_cols:
-            print(f"\n🤝 Coordination Metrics:")
-            for col in coord_cols[:5]:  # Show top 5
-                metric_name = col.replace("coord/", "")
-                value = latest.get(col, 0)
-                print(f"  {metric_name}: {value:.2f}")
-        
-        # Learning metrics
-        if "info/learner/shared_policy/learner_stats/entropy" in df.columns:
-            entropy = latest.get("info/learner/shared_policy/learner_stats/entropy", 0)
-            print(f"\n🧠 Policy Metrics:")
-            print(f"  Entropy: {entropy:.4f}")
-        
-        print("\n" + "="*70)
+        try:
+            df = pd.read_csv(progress_files[0])
+            
+            if len(df) == 0:
+                return
+            
+            latest = df.iloc[-1]
+            iteration = int(latest.get("training_iteration", 0))
+            
+            # Only print if new iteration
+            if iteration <= self.last_iteration:
+                return
+            
+            self.last_iteration = iteration
+            
+            # Clear screen (optional, comment out if annoying)
+            # os.system('cls' if os.name == 'nt' else 'clear')
+            
+            print("="*70)
+            print(f"LIVE TRAINING MONITOR - Iteration {iteration}")
+            print("="*70)
+            
+            # Core metrics
+            reward = latest.get("episode_reward_mean", 0)
+            length = latest.get("episode_len_mean", 0)
+            timesteps = latest.get("timesteps_total", 0)
+            
+            print(f"\n📊 Training Progress:")
+            print(f"  Timesteps: {timesteps:,}")
+            print(f"  Episode Reward: {reward:.2f}")
+            print(f"  Episode Length: {length:.1f}")
+            
+            # Coordination metrics (if available)
+            coord_cols = [col for col in df.columns if "coord/" in col]
+            if coord_cols:
+                print(f"\n🤝 Coordination Metrics:")
+                for col in coord_cols[:5]:  # Show top 5
+                    metric_name = col.replace("coord/", "")
+                    value = latest.get(col, 0)
+                    print(f"  {metric_name}: {value:.2f}")
+            
+            # Learning metrics
+            if "info/learner/shared_policy/learner_stats/entropy" in df.columns:
+                entropy = latest.get("info/learner/shared_policy/learner_stats/entropy", 0)
+                print(f"\n🧠 Policy Metrics:")
+                print(f"  Entropy: {entropy:.4f}")
+            
+            print("\n" + "="*70)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -84,7 +84,7 @@ def test_custom_layouts():
         
         for layout_name in layouts_to_test:
             mdp = create_playground_mdp(layout_name)
-            print(f"    ✓ {layout_name}: {mdp.terrain_mtx.shape}")
+            print(f"    ✓ {layout_name}: ({len(mdp.terrain_mtx)}, {len(mdp.terrain_mtx[0])})")
         
         return True
         

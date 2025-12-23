@@ -24,6 +24,8 @@ class CoordinationMetricsTracker:
     """
     
     def __init__(self):
+        # FIX: Define action names manually since Action.ALL_ACTIONS are tuples in this version
+        self.action_names = ["North", "South", "East", "West", "Stay", "Interact"]
         self.reset()
     
     def reset(self):
@@ -90,18 +92,26 @@ class CoordinationMetricsTracker:
         if hasattr(state, 'players'):
             for i, player in enumerate(state.players):
                 # Determine current task based on held object
+                # FIX: Robustly get object name (handle string vs object)
+                obj_name = "unknown"
                 if player.held_object is None:
                     task = "idle"
-                elif player.held_object.name == "onion":
-                    task = "carrying_onion"
-                elif player.held_object.name == "tomato":
-                    task = "carrying_tomato"
-                elif player.held_object.name == "dish":
-                    task = "carrying_dish"
-                elif player.held_object.name == "soup":
-                    task = "carrying_soup"
                 else:
-                    task = "carrying_other"
+                    if hasattr(player.held_object, 'name'):
+                        obj_name = player.held_object.name
+                    elif isinstance(player.held_object, str):
+                        obj_name = player.held_object
+                    
+                    if "onion" in obj_name:
+                        task = "carrying_onion"
+                    elif "tomato" in obj_name:
+                        task = "carrying_tomato"
+                    elif "dish" in obj_name:
+                        task = "carrying_dish"
+                    elif "soup" in obj_name:
+                        task = "carrying_soup"
+                    else:
+                        task = "carrying_other"
                 
                 self.current_tasks[i] = task
                 self.agent_task_times[i][task] += 1
@@ -119,7 +129,9 @@ class CoordinationMetricsTracker:
     
     def _detect_coordination_events(self, prev_state, curr_state, actions):
         """Detect specific coordination events between steps."""
-        
+        if not hasattr(prev_state, 'players') or not hasattr(curr_state, 'players'):
+            return
+
         # Detect item pickups
         for i in range(2):
             prev_held = prev_state.players[i].held_object
@@ -127,7 +139,9 @@ class CoordinationMetricsTracker:
             
             # Picked up ingredient
             if prev_held is None and curr_held is not None:
-                if curr_held.name in ["onion", "tomato"]:
+                # Use safer access
+                obj_name = getattr(curr_held, 'name', str(curr_held))
+                if obj_name in ["onion", "tomato"]:
                     self.ingredients_picked[i] += 1
             
             # Placed item
@@ -179,13 +193,13 @@ class CoordinationMetricsTracker:
         metrics = {}
         
         # === Action Distribution Metrics ===
-        action_names = [a.name for a in Action.ALL_ACTIONS]
         
         for agent_id in [0, 1]:
             actions = self.agent_actions[agent_id]
             total = len(actions)
             
-            for i, action_name in enumerate(action_names):
+            # FIX: Use manual action_names instead of Action.ALL_ACTIONS[i].name
+            for i, action_name in enumerate(self.action_names):
                 count = actions.count(i)
                 metrics[f"agent_{agent_id}_action_{action_name}_pct"] = (
                     100 * count / total if total > 0 else 0
@@ -306,6 +320,6 @@ if __name__ == "__main__":
     print("Coordination Metrics Tracker - Ready to use!")
     print("\nUsage:")
     print("  tracker = CoordinationMetricsTracker()")
-    print("  tracker.update(state, actions, rewards, info)")
-    print("  metrics = tracker.get_metrics()")
-    print("  tracker.print_summary()")
+    print("  # tracker.update(state, actions, rewards, info)")
+    print("  # metrics = tracker.get_metrics()")
+    print("  # tracker.print_summary()")
