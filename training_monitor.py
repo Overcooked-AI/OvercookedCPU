@@ -11,6 +11,12 @@ from pathlib import Path
 from typing import Dict, Optional, TYPE_CHECKING
 import numpy as np
 from collections import deque
+import warnings
+
+# Suppress harmless warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Suppress specific Gym warning
+warnings.filterwarnings("ignore", message=".*Gym has been unmaintained.*")
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -24,8 +30,6 @@ from ray.rllib.env import BaseEnv
 from ray.rllib.policy import Policy
 
 # FIX: Conditional import for Ray 2.30+ compatibility
-# In newer Ray versions, Episode is moved or deprecated, so we import it only for type checking
-# or handle its absence gracefully at runtime.
 if TYPE_CHECKING:
     from ray.rllib.evaluation import Episode, RolloutWorker
 
@@ -60,9 +64,37 @@ class TrainingMonitor(DefaultCallbacks):
             print(f"   View with: tensorboard --logdir {self.log_dir}")
         
         # Create metrics tracker for each worker
-        algorithm.workers.foreach_worker(
-            lambda w: setattr(w, "coordination_tracker", CoordinationMetricsTracker())
-        )
+        # FIX: Robustly handle algorithm.workers access for different Ray versions
+        worker_group = None
+        
+        # 1. Try env_runner_group (Newest Ray)
+        if hasattr(algorithm, "env_runner_group") and algorithm.env_runner_group is not None:
+            worker_group = algorithm.env_runner_group
+            
+        # 2. Try workers (Older Ray) - safely check if it exists and is not None
+        if worker_group is None and hasattr(algorithm, "workers"):
+            try:
+                # Some Ray versions treat .workers as a property, others as a method
+                # We check if it is callable without triggering property access that might fail
+                workers_attr = algorithm.workers
+                if callable(workers_attr):
+                    worker_group = workers_attr()
+                else:
+                    worker_group = workers_attr
+            except Exception:
+                # If accessing the property fails, we just move on
+                pass
+
+        # Apply tracker to workers
+        if worker_group is not None:
+            if hasattr(worker_group, "foreach_worker"):
+                worker_group.foreach_worker(
+                    lambda w: setattr(w, "coordination_tracker", CoordinationMetricsTracker())
+                )
+            elif hasattr(worker_group, "foreach_env_runner"):
+                 worker_group.foreach_env_runner(
+                    lambda w: setattr(w, "coordination_tracker", CoordinationMetricsTracker())
+                )
     
     def on_episode_start(self, *, worker, base_env, policies, episode, **kwargs):
         """Called at the start of each episode."""
@@ -266,7 +298,10 @@ class TrainingMonitor(DefaultCallbacks):
     def on_algorithm_end(self, *, algorithm, **kwargs):
         """Called when training ends."""
         if self.writer:
-            self.writer.close()
+            try:
+                self.writer.close()
+            except Exception:
+                pass
             print(f"\n✅ TensorBoard logs saved to: {self.log_dir}")
 
 
@@ -325,7 +360,7 @@ class LiveMonitor:
             self.last_iteration = iteration
             
             # Clear screen (optional, comment out if annoying)
-            # os.system('cls' if os.name == 'nt' else 'clear')
+            os.system('cls' if os.name == 'nt' else 'clear')
             
             print("="*70)
             print(f"LIVE TRAINING MONITOR - Iteration {iteration}")

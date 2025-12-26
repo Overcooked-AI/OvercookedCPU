@@ -41,7 +41,7 @@ TRAINING_CONFIG = {
     "gamma": 0.99,
     "lambda": 0.95,
     "clip_param": 0.2,
-    "vf_clip_param": 10.0,
+    "vf_clip_param": 50.0,
     "entropy_coeff": 0.01,
     "vf_loss_coeff": 0.5,
     

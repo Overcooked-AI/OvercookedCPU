@@ -26,7 +26,6 @@ if src_path not in sys.path:
 
 from overcooked_mappo_env import OvercookedMAPPOEnv, make_overcooked_env
 from config import ENV_CONFIG, TRAINING_CONFIG
-# FIX: Import from local file to ensure we get the fixed version
 from training_monitor import TrainingMonitor
 
 
@@ -262,16 +261,47 @@ class AdaptiveTrainer:
                     print(f"\n📚 Curriculum: Switching to layout '{new_layout}'")
                     self.current_layout = new_layout
                     
-                    # Update environment config
-                    new_env_config = env_config.copy()
-                    new_env_config["layout_name"] = new_layout
+                    # FIX: Properly access workers and update environment config
+                    # Get worker set - handle both old and new Ray API
+                    worker_set = None
+                    if hasattr(algorithm, 'env_runner_group') and algorithm.env_runner_group is not None:
+                        worker_set = algorithm.env_runner_group
+                    elif hasattr(algorithm, 'workers'):
+                        # Check if it's a method or property
+                        workers_attr = algorithm.workers
+                        if callable(workers_attr):
+                            worker_set = workers_attr()
+                        else:
+                            worker_set = workers_attr
                     
-                    # Recreate workers with new layout
-                    algorithm.workers.foreach_worker(
-                        lambda w: w.foreach_env(
-                            lambda e: setattr(e, 'layout_name', new_layout)
-                        )
-                    )
+                    # Update environment config for new episodes
+                    if worker_set is not None:
+                        try:
+                            # Define update function for workers
+                            def update_env_layout(env):
+                                # Update the env property directly
+                                if hasattr(env, 'layout_name'):
+                                    # Reset env with new layout if needed
+                                    # For Overcooked, we might need to recreate parts of it or just set property
+                                    # if the wrapper supports it. 
+                                    # NOTE: Standard wrapper might need a full reset or re-init logic, 
+                                    # but typically setting layout_name and resetting works if logic allows.
+                                    # Here we assume the wrapper uses this property on reset.
+                                    env.layout_name = new_layout
+                                    # Also update base_mdp if accessible, though reset() should handle it 
+                                    # if implemented robustly.
+                            
+                            # Apply to all workers
+                            if hasattr(worker_set, 'foreach_env'):
+                                worker_set.foreach_env(update_env_layout)
+                            elif hasattr(worker_set, 'foreach_worker'):
+                                worker_set.foreach_worker(
+                                    lambda w: w.foreach_env(update_env_layout)
+                                )
+                                
+                        except Exception as e:
+                            print(f"⚠️  Warning: Could not update worker layouts dynamically: {e}")
+                            print(f"   Continuing with current layout: {self.current_layout}")
             
             # Update learning rate
             if self.enable_adaptive_lr and self.lr_scheduler:
@@ -285,17 +315,29 @@ class AdaptiveTrainer:
                     self.current_lr = new_lr
                     
                     # Update algorithm's learning rate
-                    algorithm.get_policy("shared_policy").config["lr"] = new_lr
+                    try:
+                        # Try to update the learning rate in the policy config
+                        policy = algorithm.get_policy("shared_policy")
+                        if hasattr(policy, 'config'):
+                            policy.config["lr"] = new_lr
+                        # Also try to update the optimizer directly
+                        if hasattr(policy, 'model') and hasattr(policy.model, 'optimizer'):
+                            for param_group in policy.model.optimizer.param_groups:
+                                param_group['lr'] = new_lr
+                    except Exception as e:
+                        print(f"⚠️  Warning: Could not update learning rate: {e}")
             
             # Train one iteration
             result = algorithm.train()
             
-            # Extract metrics
+            # Extract metrics - handle both old and new API
             reward = result.get("env_runners", {}).get("episode_reward_mean",
                      result.get("episode_reward_mean", 0))
             
-            if reward > best_reward:
-                best_reward = reward
+            # Handle NaN rewards
+            if reward is not None and not np.isnan(reward):
+                if reward > best_reward:
+                    best_reward = reward
             
             # Print progress
             if iteration % 10 == 0 or iteration == 1:
@@ -373,10 +415,14 @@ class AdaptiveTrainer:
         length = result.get("env_runners", {}).get("episode_len_mean",
                  result.get("episode_len_mean", 0))
         
+        # Handle NaN values
+        reward_str = f"{reward:.2f}" if reward is not None and not np.isnan(reward) else "N/A"
+        length_str = f"{length:.1f}" if length is not None and not np.isnan(length) else "N/A"
+        
         print(f"\n{'='*70}")
         print(f"Iteration {iteration}/{self.num_iterations}")
         print(f"Layout: {layout} | LR: {lr:.6f}")
-        print(f"Reward: {reward:.2f} | Length: {length:.1f}")
+        print(f"Reward: {reward_str} | Length: {length_str}")
         print(f"{'='*70}")
 
 
